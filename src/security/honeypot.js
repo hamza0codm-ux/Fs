@@ -15,7 +15,8 @@ import {
 */
 
 const HONEYPOT_CHANNEL_ID =
-    '1547202840785723412';
+    '1547202840785723412'
+    '1549109977946259586';
 
 const HONEYPOT_LOG_CHANNEL_ID =
     '1541557303453683792';
@@ -251,16 +252,11 @@ async function sendHoneypotPanel(
                         '',
                         '🗑️ **Messages sent today** will be deleted across the server.',
                         '',
-                        '🔨 You will receive a **1 week timeout**.',
                         '',
                         '⚠️ Do not send messages, images, files, links, or attachments here.',
                     ].join('\n'),
                 )
-                .setFooter({
-                    text:
-                        HONEYPOT_FOOTER,
-                })
-                .setTimestamp();
+               
 
 
         /*
