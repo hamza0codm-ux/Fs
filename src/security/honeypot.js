@@ -14,9 +14,15 @@ import {
 |--------------------------------------------------------------------------
 */
 
+const TIMEOUT_HONEYPOT_CHANNEL_ID =
+    '1547202840785723412';
+
+const BAN_HONEYPOT_CHANNEL_ID =
+    '1549109977946259586';
+
 const HONEYPOT_CHANNEL_IDS = [
-    '1547202840785723412',
-    '1549109977946259586',
+    TIMEOUT_HONEYPOT_CHANNEL_ID,
+    BAN_HONEYPOT_CHANNEL_ID,
 ];
 
 const HONEYPOT_LOG_CHANNEL_ID =
@@ -25,14 +31,8 @@ const HONEYPOT_LOG_CHANNEL_ID =
 const HONEYPOT_MARKER =
     'fruity-security:honeypot';
 
-const HONEYPOT_ACTION =
-    'timeout';
-
 const HONEYPOT_TIMEOUT_MS =
     7 * 24 * 60 * 60 * 1000;
-
-const HONEYPOT_FOOTER =
-    'Fruity Security Honeypot';
 
 
 /*
@@ -49,10 +49,6 @@ const registeredHoneypotClients =
 |--------------------------------------------------------------------------
 | Prevent duplicate processing
 |--------------------------------------------------------------------------
-|
-| If the same user triggers the honeypot twice before the first cleanup
-| has finished, the second trigger is ignored.
-|
 */
 
 const usersBeingProcessed =
@@ -171,6 +167,33 @@ export function isHoneypotChannel(
 
 /*
 |--------------------------------------------------------------------------
+| Get honeypot action
+|--------------------------------------------------------------------------
+*/
+
+function getHoneypotAction(
+    channelId,
+) {
+    if (
+        channelId ===
+        BAN_HONEYPOT_CHANNEL_ID
+    ) {
+        return 'ban';
+    }
+
+    if (
+        channelId ===
+        TIMEOUT_HONEYPOT_CHANNEL_ID
+    ) {
+        return 'timeout';
+    }
+
+    return null;
+}
+
+
+/*
+|--------------------------------------------------------------------------
 | Ensure honeypot panels exist
 |--------------------------------------------------------------------------
 */
@@ -216,8 +239,13 @@ export async function ensureHoneypotPanel(
                 typeof channel.setTopic ===
                 'function'
             ) {
+                const action =
+                    getHoneypotAction(
+                        channel.id,
+                    );
+
                 const expectedTopic =
-                    `${HONEYPOT_MARKER} | action=${HONEYPOT_ACTION}`;
+                    `${HONEYPOT_MARKER} | action=${action}`;
 
                 if (
                     channel.topic !==
@@ -289,8 +317,10 @@ async function sendHoneypotPanel(
                             botUser.id &&
                         message.embeds.some(
                             (embed) =>
-                                embed.footer?.text ===
-                                HONEYPOT_FOOTER,
+                                embed.title ===
+                                    '🍯 Do Not Chat In This Channel' &&
+                                embed.description ===
+                                    'This channel is **not for chatting**.',
                         ),
                 )
                 : null;
@@ -308,23 +338,8 @@ async function sendHoneypotPanel(
                     '🍯 Do Not Chat In This Channel',
                 )
                 .setDescription(
-                    [
-                        'This channel is **not for chatting**.',
-                        '',
-                        'Sending **any message or attachment** here will trigger **automatic deletion & timeout**.',
-                        '',
-                        '🗑️ **All messages sent by the user today will be deleted across the server.**',
-                        '',
-                        '🔨 The user will also receive a **1 week timeout**.',
-                        '',
-                        '⚠️ Do not send messages, images, files, links, or attachments here.',
-                    ].join('\n'),
-                )
-                .setFooter({
-                    text:
-                        HONEYPOT_FOOTER,
-                })
-                .setTimestamp();
+                    'This channel is **not for chatting**.',
+                );
 
 
         /*
@@ -645,7 +660,7 @@ async function deleteUserMessagesFromServer(
 
         /*
         |--------------------------------------------------------------------------
-        | Don't scan unsupported channel types
+        | Don't scan unsupported channels
         |--------------------------------------------------------------------------
         */
 
@@ -761,6 +776,7 @@ async function sendHoneypotLog({
     deletedCount,
     scannedChannels,
     result,
+    action,
 }) {
     const logChannel =
         await getHoneypotLogChannel(
@@ -780,6 +796,12 @@ async function sendHoneypotLog({
                 1024,
             )
             : '[Attachment / no text]';
+
+
+    const punishment =
+        action === 'ban'
+            ? '**Permanent Ban**'
+            : '**1 Week Timeout**';
 
 
     const embed =
@@ -830,7 +852,7 @@ async function sendHoneypotLog({
                 {
                     name: '🔨 Punishment',
                     value:
-                        '**1 Week Timeout**',
+                        punishment,
                     inline: true,
                 },
                 {
@@ -1002,6 +1024,12 @@ export async function handleHoneypotMessage(
 
     try {
 
+        const action =
+            getHoneypotAction(
+                message.channel.id,
+            );
+
+
         /*
         |--------------------------------------------------------------------------
         | Delete trigger message immediately
@@ -1022,43 +1050,94 @@ export async function handleHoneypotMessage(
 
         /*
         |--------------------------------------------------------------------------
-        | TIMEOUT FIRST
+        | PUNISHMENT
         |--------------------------------------------------------------------------
-        |
-        | Punishment happens before the server-wide cleanup.
-        |
         */
 
         let result;
 
-        try {
-            if (
-                message.member.moderatable
-            ) {
-                await message.member.timeout(
-                    HONEYPOT_TIMEOUT_MS,
-                    'Fruity Security honeypot triggered',
+
+        /*
+        |--------------------------------------------------------------------------
+        | BAN HONEYPOT
+        |--------------------------------------------------------------------------
+        */
+
+        if (action === 'ban') {
+            try {
+                if (
+                    message.member.bannable
+                ) {
+                    await message.member.ban({
+                        deleteMessageSeconds: 0,
+                        reason:
+                            'Fruity Security honeypot triggered',
+                    });
+
+                    result =
+                        'User was permanently banned from the server.';
+
+                } else {
+                    result =
+                        'Could not ban the user because the bot cannot moderate them.';
+                }
+
+            } catch (error) {
+                console.error(
+                    '❌ Honeypot ban failed:',
+                    error,
                 );
 
                 result =
-                    'User received a 1 week timeout.';
-
-            } else {
-                result =
-                    'Could not timeout the user because the bot cannot moderate them.';
+                    `Ban failed: ${
+                        error.message ||
+                        'Unknown error'
+                    }`;
             }
+        }
 
-        } catch (error) {
-            console.error(
-                '❌ Honeypot timeout failed:',
-                error,
-            );
 
+        /*
+        |--------------------------------------------------------------------------
+        | TIMEOUT HONEYPOT
+        |--------------------------------------------------------------------------
+        */
+
+        else if (action === 'timeout') {
+            try {
+                if (
+                    message.member.moderatable
+                ) {
+                    await message.member.timeout(
+                        HONEYPOT_TIMEOUT_MS,
+                        'Fruity Security honeypot triggered',
+                    );
+
+                    result =
+                        'User received a 1 week timeout.';
+
+                } else {
+                    result =
+                        'Could not timeout the user because the bot cannot moderate them.';
+                }
+
+            } catch (error) {
+                console.error(
+                    '❌ Honeypot timeout failed:',
+                    error,
+                );
+
+                result =
+                    `Timeout failed: ${
+                        error.message ||
+                        'Unknown error'
+                    }`;
+            }
+        }
+
+        else {
             result =
-                `Timeout failed: ${
-                    error.message ||
-                    'Unknown error'
-                }`;
+                'No punishment action was configured for this honeypot.';
         }
 
 
@@ -1114,6 +1193,8 @@ export async function handleHoneypotMessage(
             scannedChannels,
 
             result,
+
+            action,
         });
 
 
@@ -1124,8 +1205,9 @@ export async function handleHoneypotMessage(
         */
 
         console.log(
-            `[HONEYPOT] ${message.author.tag} (${message.author.id}) triggered the honeypot. ` +
-            `Timeout attempted first. Deleted ${deletedCount} messages across ${scannedChannels} channels.`,
+            `[HONEYPOT] ${message.author.tag} (${message.author.id}) triggered ${action} honeypot. ` +
+            `${action === 'ban' ? 'Ban' : 'Timeout'} attempted first. ` +
+            `Deleted ${deletedCount} messages across ${scannedChannels} channels.`,
         );
 
     } finally {
