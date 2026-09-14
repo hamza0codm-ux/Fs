@@ -14,9 +14,10 @@ import {
 |--------------------------------------------------------------------------
 */
 
-const HONEYPOT_CHANNEL_ID =
-    '1547202840785723412'
-    '1549109977946259586';
+const HONEYPOT_CHANNEL_IDS = [
+    '1547202840785723412',
+    '1549109977946259586',
+];
 
 const HONEYPOT_LOG_CHANNEL_ID =
     '1541557303453683792';
@@ -38,14 +39,24 @@ const HONEYPOT_FOOTER =
 |--------------------------------------------------------------------------
 | Prevent duplicate event registration
 |--------------------------------------------------------------------------
-|
-| This protects against registerHoneypotEvents() accidentally being
-| called more than once for the same Discord client.
-|
 */
 
 const registeredHoneypotClients =
     new WeakSet();
+
+
+/*
+|--------------------------------------------------------------------------
+| Prevent duplicate processing
+|--------------------------------------------------------------------------
+|
+| If the same user triggers the honeypot twice before the first cleanup
+| has finished, the second trigger is ignored.
+|
+*/
+
+const usersBeingProcessed =
+    new Set();
 
 
 /*
@@ -61,30 +72,81 @@ export async function findHoneypot(
         return null;
     }
 
-    let channel =
-        guild.channels.cache.get(
-            HONEYPOT_CHANNEL_ID,
-        );
-
-    if (channel) {
-        return channel;
-    }
-
-    try {
-        channel =
-            await guild.channels.fetch(
-                HONEYPOT_CHANNEL_ID,
+    for (const channelId of HONEYPOT_CHANNEL_IDS) {
+        let channel =
+            guild.channels.cache.get(
+                channelId,
             );
-    } catch (error) {
-        console.error(
-            '❌ Failed to fetch honeypot channel:',
-            error,
-        );
 
-        return null;
+        if (channel) {
+            return channel;
+        }
+
+        try {
+            channel =
+                await guild.channels.fetch(
+                    channelId,
+                );
+
+            if (channel) {
+                return channel;
+            }
+
+        } catch (error) {
+            console.error(
+                `❌ Failed to fetch honeypot channel ${channelId}:`,
+                error,
+            );
+        }
     }
 
-    return channel;
+    return null;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Find all honeypot channels
+|--------------------------------------------------------------------------
+*/
+
+export async function findAllHoneypots(
+    guild,
+) {
+    if (!guild) {
+        return [];
+    }
+
+    const channels = [];
+
+    for (const channelId of HONEYPOT_CHANNEL_IDS) {
+        let channel =
+            guild.channels.cache.get(
+                channelId,
+            );
+
+        if (!channel) {
+            try {
+                channel =
+                    await guild.channels.fetch(
+                        channelId,
+                    );
+            } catch (error) {
+                console.error(
+                    `❌ Failed to fetch honeypot channel ${channelId}:`,
+                    error,
+                );
+
+                continue;
+            }
+        }
+
+        if (channel) {
+            channels.push(channel);
+        }
+    }
+
+    return channels;
 }
 
 
@@ -101,16 +163,15 @@ export function isHoneypotChannel(
         return false;
     }
 
-    return (
-        channel.id ===
-        HONEYPOT_CHANNEL_ID
+    return HONEYPOT_CHANNEL_IDS.includes(
+        channel.id,
     );
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| Ensure honeypot panel exists
+| Ensure honeypot panels exist
 |--------------------------------------------------------------------------
 */
 
@@ -121,75 +182,77 @@ export async function ensureHoneypotPanel(
         return null;
     }
 
-    const channel =
-        await findHoneypot(
+    const channels =
+        await findAllHoneypots(
             guild,
         );
 
-    if (!channel) {
+    if (!channels.length) {
         console.error(
-            `❌ Honeypot channel ${HONEYPOT_CHANNEL_ID} was not found in ${guild.name}.`,
+            `❌ No honeypot channels were found in ${guild.name}.`,
         );
 
         return null;
     }
 
-    if (!channel.isTextBased()) {
-        console.error(
-            `❌ Honeypot channel ${HONEYPOT_CHANNEL_ID} is not a text channel.`,
-        );
+    for (const channel of channels) {
+        if (!channel.isTextBased()) {
+            console.error(
+                `❌ Honeypot channel ${channel.id} is not a text channel.`,
+            );
 
-        return null;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Add honeypot marker to topic
-    |--------------------------------------------------------------------------
-    */
-
-    try {
-        if (
-            typeof channel.setTopic ===
-            'function'
-        ) {
-            const expectedTopic =
-                `${HONEYPOT_MARKER} | action=${HONEYPOT_ACTION}`;
-
-            if (
-                channel.topic !==
-                expectedTopic
-            ) {
-                await channel.setTopic(
-                    expectedTopic,
-                    'Mark Fruity Security honeypot channel',
-                );
-            }
+            continue;
         }
-    } catch (error) {
-        console.error(
-            '⚠️ Could not update honeypot channel topic:',
-            error,
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Add honeypot marker to topic
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+            if (
+                typeof channel.setTopic ===
+                'function'
+            ) {
+                const expectedTopic =
+                    `${HONEYPOT_MARKER} | action=${HONEYPOT_ACTION}`;
+
+                if (
+                    channel.topic !==
+                    expectedTopic
+                ) {
+                    await channel.setTopic(
+                        expectedTopic,
+                        'Mark Fruity Security honeypot channel',
+                    );
+                }
+            }
+        } catch (error) {
+            console.error(
+                `⚠️ Could not update honeypot channel topic for #${channel.name}:`,
+                error,
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Send or update panel
+        |--------------------------------------------------------------------------
+        */
+
+        await sendHoneypotPanel(
+            channel,
+        );
+
+        console.log(
+            `🍯 Honeypot panel ready in #${channel.name} (${channel.id}).`,
         );
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Send or update panel
-    |--------------------------------------------------------------------------
-    */
-
-    await sendHoneypotPanel(
-        channel,
-    );
-
-    console.log(
-        `🍯 Honeypot panel ready in #${channel.name} (${channel.id}).`,
-    );
-
-    return channel;
+    return channels;
 }
 
 
@@ -248,15 +311,20 @@ async function sendHoneypotPanel(
                     [
                         'This channel is **not for chatting**.',
                         '',
-                        'Sending **any message or attachment** here will trigger a auto deletion & timeout.',
+                        'Sending **any message or attachment** here will trigger **automatic deletion & timeout**.',
                         '',
-                        '🗑️ **Messages sent today** will be deleted across the server.',
+                        '🗑️ **All messages sent by the user today will be deleted across the server.**',
                         '',
+                        '🔨 The user will also receive a **1 week timeout**.',
                         '',
                         '⚠️ Do not send messages, images, files, links, or attachments here.',
                     ].join('\n'),
                 )
-               
+                .setFooter({
+                    text:
+                        HONEYPOT_FOOTER,
+                })
+                .setTimestamp();
 
 
         /*
@@ -290,7 +358,7 @@ async function sendHoneypotPanel(
 
     } catch (error) {
         console.error(
-            '❌ Failed to send honeypot panel:',
+            `❌ Failed to send honeypot panel in #${channel.name}:`,
             error,
         );
     }
@@ -422,20 +490,6 @@ async function deleteUserMessagesFromChannel(
 
         /*
         |--------------------------------------------------------------------------
-        | Check for older messages
-        |--------------------------------------------------------------------------
-        */
-
-        const hasOlderMessages =
-            messages.some(
-                (message) =>
-                    message.createdTimestamp <
-                    startOfToday.getTime(),
-            );
-
-
-        /*
-        |--------------------------------------------------------------------------
         | Delete matching messages
         |--------------------------------------------------------------------------
         */
@@ -511,14 +565,27 @@ async function deleteUserMessagesFromChannel(
 
         /*
         |--------------------------------------------------------------------------
-        | Stop when we reach messages from before today
+        | Check whether we reached older messages
         |--------------------------------------------------------------------------
         */
+
+        const hasOlderMessages =
+            messages.some(
+                (message) =>
+                    message.createdTimestamp <
+                    startOfToday.getTime(),
+            );
 
         if (hasOlderMessages) {
             break;
         }
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Move backwards through history
+        |--------------------------------------------------------------------------
+        */
 
         const oldest =
             messages.last();
@@ -563,13 +630,27 @@ async function deleteUserMessagesFromServer(
 
         /*
         |--------------------------------------------------------------------------
-        | Don't scan the honeypot panel itself
+        | Don't scan honeypot channels
         |--------------------------------------------------------------------------
         */
 
         if (
-            channel.id ===
-            HONEYPOT_CHANNEL_ID
+            isHoneypotChannel(
+                channel,
+            )
+        ) {
+            continue;
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Don't scan unsupported channel types
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !channel.isTextBased()
         ) {
             continue;
         }
@@ -807,7 +888,6 @@ export async function handleHoneypotMessage(
         return;
     }
 
-
     if (!message.member) {
         return;
     }
@@ -815,7 +895,7 @@ export async function handleHoneypotMessage(
 
     /*
     |--------------------------------------------------------------------------
-    | Only react inside honeypot
+    | Only react inside a honeypot
     |--------------------------------------------------------------------------
     */
 
@@ -896,129 +976,170 @@ export async function handleHoneypotMessage(
 
     /*
     |--------------------------------------------------------------------------
-    | Delete trigger message
+    | Prevent duplicate processing
     |--------------------------------------------------------------------------
     */
 
-    try {
-        if (message.deletable) {
-            await message.delete();
-        }
-    } catch (error) {
-        console.error(
-            '❌ Failed to delete honeypot trigger:',
-            error,
-        );
-    }
+    const processingKey =
+        `${message.guild.id}:${message.author.id}`;
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | TIMEOUT FIRST
-    |
-    | This deliberately happens BEFORE the server-wide
-    | message deletion so the punishment is immediate.
-    |--------------------------------------------------------------------------
-    */
-
-    let result;
-
-    try {
-        if (
-            message.member.moderatable
-        ) {
-            await message.member.timeout(
-                HONEYPOT_TIMEOUT_MS,
-                'Fruity Security honeypot triggered',
-            );
-
-            result =
-                'User received a 1 week timeout.';
-
-        } else {
-            result =
-                'Could not timeout the user because the bot cannot moderate them.';
-        }
-
-    } catch (error) {
-        console.error(
-            '❌ Honeypot timeout failed:',
-            error,
+    if (
+        usersBeingProcessed.has(
+            processingKey,
+        )
+    ) {
+        console.log(
+            `[HONEYPOT] Ignoring duplicate trigger from ${message.author.tag} (${message.author.id}).`,
         );
 
-        result =
-            `Timeout failed: ${
-                error.message ||
-                'Unknown error'
-            }`;
+        return;
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | NOW delete today's messages
-    |--------------------------------------------------------------------------
-    */
-
-    let deletedCount = 0;
-
-    let scannedChannels = 0;
-
-
-    try {
-        const cleanup =
-            await deleteUserMessagesFromServer(
-                message.guild,
-                message.author.id,
-            );
-
-        deletedCount =
-            cleanup.deletedCount;
-
-        scannedChannels =
-            cleanup.scannedChannels;
-
-    } catch (error) {
-        console.error(
-            '❌ Server-wide honeypot cleanup failed:',
-            error,
-        );
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Send log
-    |--------------------------------------------------------------------------
-    */
-
-    await sendHoneypotLog({
-        guild:
-            message.guild,
-
-        member:
-            message.member,
-
-        message,
-
-        deletedCount,
-
-        scannedChannels,
-
-        result,
-    });
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Console log
-    |--------------------------------------------------------------------------
-    */
-
-    console.log(
-        `[HONEYPOT] ${message.author.tag} (${message.author.id}) triggered the honeypot. ` +
-        `Timeout attempted first. Deleted ${deletedCount} messages across ${scannedChannels} channels.`,
+    usersBeingProcessed.add(
+        processingKey,
     );
+
+
+    try {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Delete trigger message immediately
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+            if (message.deletable) {
+                await message.delete();
+            }
+        } catch (error) {
+            console.error(
+                '❌ Failed to delete honeypot trigger:',
+                error,
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | TIMEOUT FIRST
+        |--------------------------------------------------------------------------
+        |
+        | Punishment happens before the server-wide cleanup.
+        |
+        */
+
+        let result;
+
+        try {
+            if (
+                message.member.moderatable
+            ) {
+                await message.member.timeout(
+                    HONEYPOT_TIMEOUT_MS,
+                    'Fruity Security honeypot triggered',
+                );
+
+                result =
+                    'User received a 1 week timeout.';
+
+            } else {
+                result =
+                    'Could not timeout the user because the bot cannot moderate them.';
+            }
+
+        } catch (error) {
+            console.error(
+                '❌ Honeypot timeout failed:',
+                error,
+            );
+
+            result =
+                `Timeout failed: ${
+                    error.message ||
+                    'Unknown error'
+                }`;
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | NOW delete today's messages
+        |--------------------------------------------------------------------------
+        */
+
+        let deletedCount = 0;
+
+        let scannedChannels = 0;
+
+
+        try {
+            const cleanup =
+                await deleteUserMessagesFromServer(
+                    message.guild,
+                    message.author.id,
+                );
+
+            deletedCount =
+                cleanup.deletedCount;
+
+            scannedChannels =
+                cleanup.scannedChannels;
+
+        } catch (error) {
+            console.error(
+                '❌ Server-wide honeypot cleanup failed:',
+                error,
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Send log
+        |--------------------------------------------------------------------------
+        */
+
+        await sendHoneypotLog({
+            guild:
+                message.guild,
+
+            member:
+                message.member,
+
+            message,
+
+            deletedCount,
+
+            scannedChannels,
+
+            result,
+        });
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Console log
+        |--------------------------------------------------------------------------
+        */
+
+        console.log(
+            `[HONEYPOT] ${message.author.tag} (${message.author.id}) triggered the honeypot. ` +
+            `Timeout attempted first. Deleted ${deletedCount} messages across ${scannedChannels} channels.`,
+        );
+
+    } finally {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Allow future triggers after processing finishes
+        |--------------------------------------------------------------------------
+        */
+
+        usersBeingProcessed.delete(
+            processingKey,
+        );
+    }
 }
 
 
@@ -1084,6 +1205,6 @@ export function registerHoneypotEvents(
 
 
     console.log(
-        '🍯 Honeypot message listener registered.',
+        `🍯 Honeypot message listener registered for ${HONEYPOT_CHANNEL_IDS.length} channels.`,
     );
 }
